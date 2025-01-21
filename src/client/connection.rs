@@ -390,6 +390,7 @@ where
     let mut tight_decoder = codec::TightDecoder::new();
     let mut trle_decoder = codec::TrleDecoder::new();
     let mut cursor = codec::CursorDecoder::new();
+    let mut jpeg_decoder = codec::JpegDecoder::new();
 
     // main decoding loop
     while let Err(oneshot::error::TryRecvError::Empty) = stop_ch.try_recv() {
@@ -404,6 +405,11 @@ where
                     match rect.encoding {
                         VncEncoding::Raw => {
                             raw_decoder
+                                .decode(pf, &rect.rect, stream, output_func)
+                                .await?;
+                        }
+                        VncEncoding::Jpeg => {
+                            jpeg_decoder
                                 .decode(pf, &rect.rect, stream, output_func)
                                 .await?;
                         }

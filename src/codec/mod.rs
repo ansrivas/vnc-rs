@@ -1,10 +1,12 @@
 mod cursor;
+mod jpeg;
 mod raw;
 mod tight;
 mod trle;
 mod zlib;
 mod zrle;
 pub(crate) use cursor::Decoder as CursorDecoder;
+pub(crate) use jpeg::Decoder as JpegDecoder;
 pub(crate) use raw::Decoder as RawDecoder;
 pub(crate) use tight::Decoder as TightDecoder;
 pub(crate) use trle::Decoder as TrleDecoder;
