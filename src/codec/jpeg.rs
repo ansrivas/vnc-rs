@@ -29,77 +29,74 @@ impl Decoder {
         F: Fn(VncEvent) -> Fut,
         Fut: Future<Output = Result<(), VncError>>,
     {
-        // Read JPEG segments
+        self.read_all_segments(input).await?;
+        self.insert_cached_tables();
+
+        let jpeg_data = self.combine_segments();
+        let decoded = self.decode_jpeg_to_format(&jpeg_data, format)?;
+
+        output_func(VncEvent::RawImage(*rect, decoded)).await?;
+        self.cache_tables();
+        self.segments.clear();
+
+        Ok(())
+    }
+
+    async fn read_all_segments<S: AsyncRead + Unpin>(
+        &mut self,
+        input: &mut S,
+    ) -> Result<(), VncError> {
         loop {
-            let segment = self.read_segment(input).await?;
-            if segment.is_none() {
-                return Ok(());
-            }
-            let segment = segment.unwrap();
-            self.segments.push(segment.clone());
-
-            if segment[1] == 0xD9 {
-                break;
-            }
-        }
-
-        // Process tables
-        let mut huffman_tables = Vec::new();
-        let mut quant_tables = Vec::new();
-
-        for segment in &self.segments {
-            match segment[1] {
-                0xC4 => huffman_tables.push(segment.clone()),
-                0xDB => quant_tables.push(segment.clone()),
-                _ => {}
+            match self.read_segment(input).await? {
+                Some(segment) => {
+                    if segment[1] == 0xD9 {
+                        self.segments.push(segment);
+                        break;
+                    }
+                    self.segments.push(segment);
+                }
+                None => break,
             }
         }
+        Ok(())
+    }
 
-        // Find SOF marker
+    fn insert_cached_tables(&mut self) {
+        if !self.contains_marker(0xC0) && !self.contains_marker(0xC2) {
+            return; // No SOF marker, invalid JPEG
+        }
+
         let sof_index = self
             .segments
             .iter()
-            .position(|x| x[1] == 0xC0 || x[1] == 0xC2)
-            .ok_or(VncError::InvalidImageData)?;
+            .position(|seg| seg[1] == 0xC0 || seg[1] == 0xC2)
+            .unwrap();
 
-        // Insert cached tables if needed
-        if quant_tables.is_empty() {
+        if !self.contains_marker(0xDB) {
             self.segments.splice(
                 sof_index + 1..sof_index + 1,
                 self.cached_quant_tables.clone(),
             );
         }
-        if huffman_tables.is_empty() {
+        if !self.contains_marker(0xC4) {
             self.segments.splice(
                 sof_index + 1..sof_index + 1,
                 self.cached_huffman_tables.clone(),
             );
         }
+    }
 
-        // Combine segments into JPEG data
-        let total_length: usize = self.segments.iter().map(|seg| seg.len()).sum();
+    fn contains_marker(&self, marker: u8) -> bool {
+        self.segments.iter().any(|seg| seg[1] == marker)
+    }
+
+    fn combine_segments(&self) -> Vec<u8> {
+        let total_length: usize = self.segments.iter().map(Vec::len).sum();
         let mut jpeg_data = Vec::with_capacity(total_length);
-
         for segment in &self.segments {
             jpeg_data.extend_from_slice(segment);
         }
-
-        // Convert JPEG to target pixel format
-        let decoded = self.decode_jpeg_to_format(&jpeg_data, format)?;
-
-        // Send image event
-        output_func(VncEvent::RawImage(*rect, decoded)).await?;
-
-        // Cache tables for future use
-        if !huffman_tables.is_empty() {
-            self.cached_huffman_tables = huffman_tables;
-        }
-        if !quant_tables.is_empty() {
-            self.cached_quant_tables = quant_tables;
-        }
-
-        self.segments.clear();
-        Ok(())
+        jpeg_data
     }
 
     fn decode_jpeg_to_format(
@@ -107,26 +104,15 @@ impl Decoder {
         jpeg_data: &[u8],
         format: &PixelFormat,
     ) -> Result<Vec<u8>, VncError> {
-        // Create output buffer based on pixel format
-        let bpp = format.bits_per_pixel / 8;
-        let mut output = Vec::new();
-
-        // Decode JPEG data
-        // let decoded = jpeg_decode::Decoder::new(jpeg_data)
-        //     .decode()
-        //     .map_err(|_| VncError::InvalidImageData)?;
         let mut decoder = zune_jpeg::JpegDecoder::new(jpeg_data);
-        // decode the file
-        let pixels = decoder.decode().unwrap();
+        let pixels = decoder.decode().map_err(|_| VncError::InvalidImageData)?;
 
-        // Convert RGB to target pixel format
-        for pixel in pixels.chunks(3) {
-            let r = pixel[0];
-            let g = pixel[1];
-            let b = pixel[2];
+        let bpp = format.bits_per_pixel / 8;
+        let mut output = Vec::with_capacity(pixels.len() / 3 * bpp as usize);
 
+        for chunk in pixels.chunks_exact(3) {
+            let (r, g, b) = (chunk[0], chunk[1], chunk[2]);
             let pixel_value = if format.true_color_flag > 0 {
-                // True color conversion
                 let r = ((r as u32 * format.red_max as u32) / 255) << format.red_shift;
                 let g = ((g as u32 * format.green_max as u32) / 255) << format.green_shift;
                 let b = ((b as u32 * format.blue_max as u32) / 255) << format.blue_shift;
@@ -138,13 +124,10 @@ impl Decoder {
                     value.to_le_bytes()
                 }
             } else {
-                // Indexed color (not typically used for JPEG)
                 [r, g, b, 255]
             };
-
             output.extend_from_slice(&pixel_value[..bpp as usize]);
         }
-
         Ok(output)
     }
 
@@ -152,26 +135,23 @@ impl Decoder {
         &mut self,
         input: &mut S,
     ) -> Result<Option<Vec<u8>>, VncError> {
-        // Read marker
         let marker = input.read_u8().await?;
         if marker != 0xFF {
             return Err(VncError::InvalidImageData);
         }
 
         let segment_type = input.read_u8().await?;
-
-        // Handle markers with no length
         if (0xD0..=0xD9).contains(&segment_type) || segment_type == 0x01 {
             return Ok(Some(vec![marker, segment_type]));
         }
 
-        // Read length and data
         let length = input.read_u16().await? as usize;
         if length < 2 {
             return Err(VncError::InvalidImageData);
         }
 
-        let mut segment = vec![marker, segment_type];
+        let mut segment = Vec::with_capacity(length + 2);
+        segment.extend_from_slice(&[marker, segment_type]);
         segment.extend_from_slice(&(length as u16).to_be_bytes());
 
         let mut data = vec![0u8; length - 2];
@@ -179,5 +159,21 @@ impl Decoder {
         segment.extend(data);
 
         Ok(Some(segment))
+    }
+
+    fn cache_tables(&mut self) {
+        self.cached_quant_tables = self
+            .segments
+            .iter()
+            .filter(|seg| seg[1] == 0xDB)
+            .cloned()
+            .collect();
+
+        self.cached_huffman_tables = self
+            .segments
+            .iter()
+            .filter(|seg| seg[1] == 0xC4)
+            .cloned()
+            .collect();
     }
 }
