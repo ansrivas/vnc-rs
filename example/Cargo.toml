@@ -19,7 +19,7 @@ name = "vnc-rs"
 [dependencies]
 vnc-rs = { path="../" }
 #error
-thiserror = "^1.0"
+thiserror = "^2.0"
 anyhow = "^1.0"
 
 #log
@@ -30,7 +30,7 @@ tracing-subscriber = { version = "^0.3" }
 tokio = { version = "^1", features = ["full"] }
 
 # x11
-minifb = "0.23.0"
+minifb = "0.28"
 
 
 [profile.release]
