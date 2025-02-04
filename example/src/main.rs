@@ -3,6 +3,7 @@ use minifb::{Key, Scale, Window, WindowOptions};
 use tokio::{self, net::TcpStream};
 use tracing::{event, Level};
 use vnc::{PixelFormat, Rect, VncConnector, VncEvent, X11Event};
+mod x11key;
 
 struct CanvasUtils {
     window: Window,
@@ -212,7 +213,8 @@ impl MouseUtil {
 }
 
 fn convert_key_to_u32(key: minifb::Key) -> u32 {
-    key as u32
+    // key as u32
+    x11key::map_minifb_key_to_x11_keysym(key)
 }
 
 #[tokio::main]
@@ -232,9 +234,9 @@ async fn main() -> Result<()> {
 
     tracing::subscriber::set_global_default(subscriber).expect("setting default subscriber failed");
 
-    let tcp = TcpStream::connect("localhost:5901").await?;
+    let tcp = TcpStream::connect("localhost:5900").await?;
     let vnc = VncConnector::new(tcp)
-        .set_auth_method(async move { Ok("none".to_string()) })
+        .set_auth_method(async move { Ok("xxxx".to_string()) })
         // .add_encoding(vnc::VncEncoding::Tight)
         // .add_encoding(vnc::VncEncoding::Zrle)
         // .add_encoding(vnc::VncEncoding::CopyRect)
@@ -252,6 +254,7 @@ async fn main() -> Result<()> {
     // canvas.test();
     let mut now = std::time::Instant::now();
     let mut pressed_keys = Vec::<u32>::new();
+    // let (x11_events_sender, mut x11_events_receiver) = tokio::sync::mpsc::channel(4096);
 
     loop {
         let mut events = Vec::<X11Event>::new();
@@ -273,32 +276,37 @@ async fn main() -> Result<()> {
             .iter()
             .for_each(|key| {
                 let converted_key = convert_key_to_u32(*key);
+                let event = X11Event::KeyEvent((converted_key, true).into());
+                // tokio::task::spawn_blocking(|| vnc.input(event.clone()));
                 // tracing::info!("Pressed {}", pressed_keys.contains(&converted_key));
                 // tracing::info!("pressed_keys {:?}", pressed_keys);
                 // tracing::info!("converted_keys {}", converted_key);
-                if !pressed_keys.contains(&converted_key) {
-                    // tracing::info!("Pushing Key pressed: {:?}", key);
-                    pressed_keys.push(converted_key);
+                // if !pressed_keys.contains(&converted_key) {
+                //     // tracing::info!("Pushing Key pressed: {:?}", key);
+                //     pressed_keys.push(converted_key);
                     let event = X11Event::KeyEvent((converted_key, true).into());
                     events.push(event);
-                    tracing::info!("Events pressed: {:?}", events);
+                //     tracing::info!("Events pressed: {:?}", events);
                    
-                }
+                // }
                 // tracing::info!("Key pressed: {:?}", pressed_keys);
                 // tracing::info!("Events pressed: {:?}", events);
             });
 
         canvas.window.get_keys_released().iter().for_each(|key| {
             let converted_key = convert_key_to_u32(*key);
+            // let event = X11Event::KeyEvent((converted_key, true).into());
+            // tokio::task::spawn_blocking(|| vnc.input(event.clone()));
+
             // tracing::info!("Released {}", pressed_keys.contains(&converted_key));
 
-            if pressed_keys.contains(&converted_key) {
-                // tracing::info!("Removing Key released: {:?}", key);
-                pressed_keys.retain(|&x| x != converted_key);
+            // if pressed_keys.contains(&converted_key) {
+            //     // tracing::info!("Removing Key released: {:?}", key);
+            //     pressed_keys.retain(|&x| x != converted_key);
                 events.push(X11Event::KeyEvent((convert_key_to_u32(*key), false).into()));
-                tracing::info!("Events released: {:?}", events);
+            //     tracing::info!("Events released: {:?}", events);
 
-            }
+            // }
             // tracing::info!("Key released: {:?}", pressed_keys);
             // tracing::info!("Events released: {:?}", events);
         });
