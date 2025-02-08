@@ -234,13 +234,13 @@ async fn main() -> Result<()> {
 
     tracing::subscriber::set_global_default(subscriber).expect("setting default subscriber failed");
 
-    let tcp = TcpStream::connect("localhost:5900").await?;
+    let tcp = TcpStream::connect("10.0.0.51:5922").await?;
     let vnc = VncConnector::new(tcp)
-        .set_auth_method(async move { Ok("xxxx".to_string()) })
-        // .add_encoding(vnc::VncEncoding::Tight)
-        // .add_encoding(vnc::VncEncoding::Zrle)
-        // .add_encoding(vnc::VncEncoding::CopyRect)
-        // .add_encoding(vnc::VncEncoding::Raw)
+        .set_auth_method(async move { Ok("".to_string()) })
+        .add_encoding(vnc::VncEncoding::Tight)
+        .add_encoding(vnc::VncEncoding::Zrle)
+        .add_encoding(vnc::VncEncoding::CopyRect)
+        .add_encoding(vnc::VncEncoding::Raw)
         .add_encoding(vnc::VncEncoding::Jpeg)
         .allow_shared(true)
         .set_pixel_format(PixelFormat::bgra())
@@ -254,8 +254,28 @@ async fn main() -> Result<()> {
     // canvas.test();
     let mut now = std::time::Instant::now();
     let mut pressed_keys = Vec::<u32>::new();
-    // let (x11_events_sender, mut x11_events_receiver) = tokio::sync::mpsc::channel(4096);
+    let (x11_events_sender, mut x11_events_receiver) = tokio::sync::mpsc::channel(1000000);
 
+    // Refresh rate: 60Hz from VNC
+    let vnc_clone = vnc.clone();
+    tokio::spawn(async move {
+        let mut timer = tokio::time::interval(std::time::Duration::from_millis(16));
+        loop {
+            timer.tick().await;
+            let _ = vnc_clone.input(X11Event::Refresh).await;
+
+        }
+    });
+
+    // Tackle X11 events
+    let vnc_clone = vnc.clone();
+    tokio::spawn(async move {
+        while let Ok(event) = x11_events_receiver.try_recv() {
+            let _ = vnc_clone.input(event).await;
+        }
+    });
+
+ 
     loop {
         let mut events = Vec::<X11Event>::new();
 
@@ -284,10 +304,10 @@ async fn main() -> Result<()> {
                 // if !pressed_keys.contains(&converted_key) {
                 //     // tracing::info!("Pushing Key pressed: {:?}", key);
                 //     pressed_keys.push(converted_key);
-                    let event = X11Event::KeyEvent((converted_key, true).into());
-                    events.push(event);
+                let event = X11Event::KeyEvent((converted_key, true).into());
+                events.push(event);
                 //     tracing::info!("Events pressed: {:?}", events);
-                   
+
                 // }
                 // tracing::info!("Key pressed: {:?}", pressed_keys);
                 // tracing::info!("Events pressed: {:?}", events);
@@ -303,7 +323,7 @@ async fn main() -> Result<()> {
             // if pressed_keys.contains(&converted_key) {
             //     // tracing::info!("Removing Key released: {:?}", key);
             //     pressed_keys.retain(|&x| x != converted_key);
-                events.push(X11Event::KeyEvent((convert_key_to_u32(*key), false).into()));
+            events.push(X11Event::KeyEvent((convert_key_to_u32(*key), false).into()));
             //     tracing::info!("Events released: {:?}", events);
 
             // }
@@ -312,25 +332,21 @@ async fn main() -> Result<()> {
         });
 
         if mouse.changed(&canvas.window) {
-            let _ = vnc
-                .input(X11Event::PointerEvent(
-                    (mouse.x, mouse.y, mouse.mask).into(),
-                ))
-                .await;
+            let event = X11Event::PointerEvent((mouse.x, mouse.y, mouse.mask).into());
+            x11_events_sender.send(event).await;
         }
 
-        if now.elapsed().as_millis() > 16 {
-            // Add code for receiver of input events
+        // if now.elapsed().as_millis() > 16 {
+        //     // Add code for receiver of input events
 
-            // tracing::info!("Sending events");
-            // let event = events.pop().unwrap_or(X11Event::Refresh);
-            for event in events.iter() {
-                let _ = vnc.input(event.clone()).await;
-            }
+        //     // tracing::info!("Sending events");
+        //     // let event = events.pop().unwrap_or(X11Event::Refresh);
+        //     for event in events.iter() {
+        //         let _ = vnc.input(event.clone()).await;
+        //     }
             let _ = canvas.flush();
-            let _ = vnc.input(X11Event::Refresh).await;
-            now = std::time::Instant::now();
-        }
+        //     now = std::time::Instant::now();
+        // }
     }
     canvas.close();
     let _ = vnc.close().await;
