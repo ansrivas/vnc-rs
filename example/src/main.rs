@@ -10,6 +10,7 @@ struct CanvasUtils {
     video: Vec<u32>,
     width: u32,
     height: u32,
+    pixel_format: PixelFormat
 }
 
 impl CanvasUtils {
@@ -41,6 +42,7 @@ impl CanvasUtils {
             video: vec![],
             width: 800,
             height: 600,
+            pixel_format: PixelFormat::bgra(),
         })
     }
 
@@ -130,7 +132,10 @@ impl CanvasUtils {
             VncEvent::Bell => {
                 tracing::warn!("Bell event got, but ignore it");
             }
-            VncEvent::SetPixelFormat(_) => unreachable!(),
+            VncEvent::SetPixelFormat(pf) => {
+                tracing::warn!("SetPixelFormat event got, {:?} ", pf);
+                self.pixel_format = pf; // Update the pixel format
+            }
             VncEvent::Copy(dst, src) => {
                 self.copy(dst, src)?;
             }
